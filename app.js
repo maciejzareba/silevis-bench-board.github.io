@@ -159,6 +159,7 @@ const state = {
     bench: [],
     pullups: []
   },
+  expandedAttemptIds: new Set(),
   searchTerm: "",
   sortBy: "points-desc",
   storageMode: "indexedDB"
@@ -221,24 +222,82 @@ function getResultValue(result, config) {
   return Number(result?.[config.valueKey]);
 }
 
-function createResult(data, config, existingId = generateId(), updatedAt = new Date().toISOString()) {
+function getTimestamp(value) {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function normalizeDate(value, fallback = new Date().toISOString()) {
+  const date = new Date(value || fallback);
+
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toISOString();
+  }
+
+  return date.toISOString();
+}
+
+function createAttempt(data, config, existingId = generateId(), attemptedAt = new Date().toISOString()) {
   const value = Number(data[config.valueKey]);
   const bodyWeightKg = Number(data.bodyWeightKg);
   const heightCm = Number(data.heightCm);
-  const baseResult = {
+  const baseAttempt = {
     id: existingId,
-    discipline: config.key,
-    name: String(data.name || "").trim(),
     heightCm,
     bodyWeightKg,
     [config.valueKey]: value,
-    updatedAt
+    attemptedAt: normalizeDate(attemptedAt)
   };
 
   return {
-    ...baseResult,
-    points: config.calculatePoints(baseResult)
+    ...baseAttempt,
+    points: config.calculatePoints(baseAttempt)
   };
+}
+
+function isUsableAttempt(attempt, config) {
+  return Number.isFinite(attempt.heightCm)
+    && Number.isFinite(attempt.bodyWeightKg)
+    && Number.isFinite(getResultValue(attempt, config))
+    && Number.isFinite(attempt.points);
+}
+
+function compareAttempts(a, b, config) {
+  return b.points - a.points
+    || getResultValue(b, config) - getResultValue(a, config)
+    || getTimestamp(b.attemptedAt) - getTimestamp(a.attemptedAt);
+}
+
+function sortAttemptsByDate(attempts) {
+  return [...attempts].sort((a, b) => getTimestamp(a.attemptedAt) - getTimestamp(b.attemptedAt));
+}
+
+function createResultFromAttempts(data, config, attempts, existingId = generateId()) {
+  const validAttempts = attempts.filter((attempt) => isUsableAttempt(attempt, config));
+  const bestAttempt = [...validAttempts].sort((a, b) => compareAttempts(a, b, config))[0];
+
+  if (!bestAttempt) {
+    return null;
+  }
+
+  return {
+    id: existingId,
+    discipline: config.key,
+    name: String(data.name || "").trim(),
+    heightCm: bestAttempt.heightCm,
+    bodyWeightKg: bestAttempt.bodyWeightKg,
+    [config.valueKey]: getResultValue(bestAttempt, config),
+    points: bestAttempt.points,
+    updatedAt: bestAttempt.attemptedAt,
+    bestAttemptId: bestAttempt.id,
+    attempts: sortAttemptsByDate(validAttempts)
+  };
+}
+
+function createResult(data, config, existingId = generateId(), updatedAt = new Date().toISOString()) {
+  return createResultFromAttempts(data, config, [
+    createAttempt(data, config, existingId, updatedAt)
+  ], existingId);
 }
 
 function getLoadedValue(item, config) {
@@ -257,24 +316,49 @@ function getLoadedValue(item, config) {
   return undefined;
 }
 
-function normalizeLoadedResults(results, activityKey = state.currentActivity) {
-  const config = getActivityConfig(activityKey);
+function normalizeLoadedAttempt(item, config, fallbackData, fallbackDate) {
+  const loadedValue = getLoadedValue(item, config);
+  const fallbackValue = getLoadedValue(fallbackData, config);
+  const value = loadedValue !== undefined ? loadedValue : fallbackValue;
+  const attempt = createAttempt({
+    heightCm: item?.heightCm ?? fallbackData?.heightCm,
+    bodyWeightKg: item?.bodyWeightKg ?? fallbackData?.bodyWeightKg,
+    [config.valueKey]: value
+  }, config, item?.id || generateId(), item?.attemptedAt || item?.createdAt || item?.updatedAt || fallbackDate);
 
+  return isUsableAttempt(attempt, config) ? attempt : null;
+}
+
+function normalizeLoadedResult(item, activityKey) {
+  const config = getActivityConfig(activityKey);
+  const name = String(item?.name || "").trim();
+
+  if (!item || !name) {
+    return null;
+  }
+
+  const fallbackDate = item.updatedAt || new Date().toISOString();
+  const rawAttempts = Array.isArray(item.attempts) && item.attempts.length > 0
+    ? item.attempts
+    : [item];
+  const attempts = rawAttempts
+    .map((attempt) => normalizeLoadedAttempt(attempt, config, item, fallbackDate))
+    .filter(Boolean);
+
+  return createResultFromAttempts({
+    name,
+    discipline: item.discipline
+  }, config, attempts, item.id || generateId());
+}
+
+function normalizeLoadedResults(results, activityKey = state.currentActivity) {
   if (!Array.isArray(results)) {
     return [];
   }
 
   return results
-    .filter((item) => {
-      const value = Number(getLoadedValue(item, config));
-      return item && String(item.name || "").trim() && Number.isFinite(value);
-    })
-    .map((item) => createResult({
-      name: item.name,
-      heightCm: item.heightCm,
-      bodyWeightKg: item.bodyWeightKg,
-      [config.valueKey]: getLoadedValue(item, config)
-    }, config, item.id || generateId(), item.updatedAt || new Date().toISOString()));
+    .map((item) => normalizeLoadedResult(item, activityKey))
+    .filter(Boolean);
 }
 
 function getInitializedKey(activityKey) {
@@ -569,6 +653,74 @@ function getMedalClass(place) {
   return "";
 }
 
+function getExpandedAttemptKey(resultId, activityKey = state.currentActivity) {
+  return `${activityKey}:${resultId}`;
+}
+
+function clearExpandedAttemptsForActivity(activityKey) {
+  state.expandedAttemptIds.forEach((expandedKey) => {
+    if (expandedKey.startsWith(`${activityKey}:`)) {
+      state.expandedAttemptIds.delete(expandedKey);
+    }
+  });
+}
+
+function getResultAttempts(result, config) {
+  if (Array.isArray(result.attempts) && result.attempts.length > 0) {
+    return sortAttemptsByDate(result.attempts);
+  }
+
+  return [
+    createAttempt({
+      heightCm: result.heightCm,
+      bodyWeightKg: result.bodyWeightKg,
+      [config.valueKey]: getResultValue(result, config)
+    }, config, result.bestAttemptId || result.id, result.updatedAt)
+  ];
+}
+
+function formatAttemptCount(count) {
+  const lastDigit = count % 10;
+  const lastTwoDigits = count % 100;
+
+  if (count === 1) {
+    return "1 próba";
+  }
+
+  if (lastDigit >= 2 && lastDigit <= 4 && !(lastTwoDigits >= 12 && lastTwoDigits <= 14)) {
+    return `${count} próby`;
+  }
+
+  return `${count} prób`;
+}
+
+function renderAttemptHistory(result, config, attempts) {
+  const bestAttemptId = result.bestAttemptId || result.id;
+  const rows = sortAttemptsByDate(attempts).map((attempt, index) => {
+    const isBest = attempt.id === bestAttemptId;
+    const bestLabel = isBest ? "<span class=\"best-label\">najlepsza</span>" : "";
+
+    return `
+      <li class="attempt-item ${isBest ? "is-best" : ""}">
+        <span>Próba ${index + 1}</span>
+        <strong>${formatNumber(getResultValue(attempt, config))} ${config.valueUnit}</strong>
+        <span>${formatDate(attempt.attemptedAt)}</span>
+        <span>${formatNumber(attempt.points)} pkt ${bestLabel}</span>
+      </li>
+    `;
+  }).join("");
+
+  return `
+    <div class="attempt-history" id="attempt-history-${escapeHtml(result.id)}">
+      <div class="attempt-history-heading">
+        <strong>Historia prób</strong>
+        <span>${formatAttemptCount(attempts.length)}</span>
+      </div>
+      <ol class="attempt-list">${rows}</ol>
+    </div>
+  `;
+}
+
 function updateActivityUi() {
   const config = getActivityConfig();
 
@@ -670,6 +822,8 @@ function renderRanking() {
     const place = index + 1;
     const medalClass = getMedalClass(place);
     const value = getResultValue(result, config);
+    const attempts = getResultAttempts(result, config);
+    const isHistoryExpanded = state.expandedAttemptIds.has(getExpandedAttemptKey(result.id, config.key));
     const row = document.createElement("article");
     row.className = `ranking-row ${place <= 3 ? "is-podium" : ""}`;
     row.dataset.id = result.id;
@@ -682,7 +836,21 @@ function renderRanking() {
       <div class="avatar" aria-hidden="true">${getInitials(result.name)}</div>
       <div class="employee">
         <span class="employee-name">${escapeHtml(result.name)}</span>
-        <span class="updated">Aktualizacja: ${formatDate(result.updatedAt)}</span>
+        <div class="employee-meta">
+          <span class="updated">Najlepsza próba: ${formatDate(result.updatedAt)}</span>
+          <button
+            type="button"
+            class="attempts-toggle ${isHistoryExpanded ? "is-expanded" : ""}"
+            data-action="toggle-attempts"
+            aria-expanded="${isHistoryExpanded}"
+            aria-controls="attempt-history-${escapeHtml(result.id)}"
+            aria-label="Pokaż historię prób: ${formatAttemptCount(attempts.length)}"
+            title="Historia prób"
+          >
+            <span aria-hidden="true">↺</span>
+            ${attempts.length}
+          </button>
+        </div>
       </div>
       <div class="lifted-value" aria-label="${formatNumber(value)} ${config.valueUnitA11y}">
         <strong>${formatNumber(value)}</strong>
@@ -693,6 +861,7 @@ function renderRanking() {
         <button type="button" class="edit-button" data-action="edit">Edytuj</button>
         <button type="button" class="delete-button" data-action="delete">Usuń</button>
       </div>
+      ${isHistoryExpanded ? renderAttemptHistory(result, config, attempts) : ""}
     `;
 
     fragment.append(row);
@@ -774,14 +943,55 @@ async function handleSubmit(event) {
   }
 
   const editingId = elements.editingId.value;
+  const currentResults = getCurrentResults();
   const normalizedName = normalizeText(formData.name.trim());
-  const existingByName = getCurrentResults().find((result) => normalizeText(result.name) === normalizedName);
-  const resultId = editingId || existingByName?.id || generateId();
-  const nextResult = createResult(formData, config, resultId);
+  const existingByName = currentResults.find((result) => normalizeText(result.name) === normalizedName);
+  let resultId = editingId || existingByName?.id || generateId();
+  let nextResult;
+  let successMessage = "Wynik został zapisany lokalnie.";
+
+  if (editingId) {
+    const editedResult = currentResults.find((result) => result.id === editingId);
+
+    if (editedResult) {
+      const bestAttemptId = editedResult.bestAttemptId || editedResult.id;
+      const replacementAttempt = createAttempt(formData, config, bestAttemptId);
+      const attempts = getResultAttempts(editedResult, config).map((attempt) => (
+        attempt.id === bestAttemptId ? replacementAttempt : attempt
+      ));
+
+      if (!attempts.some((attempt) => attempt.id === bestAttemptId)) {
+        attempts.push(replacementAttempt);
+      }
+
+      nextResult = createResultFromAttempts(formData, config, attempts, editedResult.id);
+      resultId = editedResult.id;
+      successMessage = "Wynik został zaktualizowany lokalnie.";
+    } else {
+      nextResult = createResult(formData, config, resultId);
+    }
+  } else if (existingByName) {
+    const nextAttempt = createAttempt(formData, config);
+
+    nextResult = createResultFromAttempts(formData, config, [
+      ...getResultAttempts(existingByName, config),
+      nextAttempt
+    ], existingByName.id);
+    resultId = existingByName.id;
+    state.expandedAttemptIds.add(getExpandedAttemptKey(resultId, config.key));
+    successMessage = "Dodano kolejną próbę. Na tablicy widoczny jest najlepszy wynik.";
+  } else {
+    nextResult = createResult(formData, config, resultId);
+  }
+
+  if (!nextResult) {
+    renderMessages(["Nie udało się przygotować poprawnego wyniku do zapisu."]);
+    return;
+  }
 
   setCurrentResults([
     nextResult,
-    ...getCurrentResults().filter((result) => result.id !== resultId)
+    ...currentResults.filter((result) => result.id !== resultId)
   ]);
 
   const isPersisted = await saveResults(config.key, getCurrentResults());
@@ -789,7 +999,7 @@ async function handleSubmit(event) {
   clearForm();
 
   if (isPersisted) {
-    renderMessages(["Wynik został zapisany lokalnie."], "success");
+    renderMessages([successMessage], "success");
     return;
   }
 
@@ -832,6 +1042,19 @@ function handleRankingClick(event) {
     return;
   }
 
+  if (button.dataset.action === "toggle-attempts") {
+    const expandedKey = getExpandedAttemptKey(result.id);
+
+    if (state.expandedAttemptIds.has(expandedKey)) {
+      state.expandedAttemptIds.delete(expandedKey);
+    } else {
+      state.expandedAttemptIds.add(expandedKey);
+    }
+
+    renderRanking();
+    return;
+  }
+
   if (button.dataset.action === "edit") {
     fillForm(result);
     return;
@@ -843,7 +1066,7 @@ function handleRankingClick(event) {
 }
 
 async function deleteResult(result) {
-  const confirmed = window.confirm(`Czy na pewno usunąć wynik pracownika ${result.name}?`);
+  const confirmed = window.confirm(`Czy na pewno usunąć wynik pracownika ${result.name} razem z historią prób?`);
 
   if (!confirmed) {
     return;
@@ -852,6 +1075,7 @@ async function deleteResult(result) {
   const config = getActivityConfig();
 
   setCurrentResults(getCurrentResults().filter((item) => item.id !== result.id));
+  state.expandedAttemptIds.delete(getExpandedAttemptKey(result.id, config.key));
   const isPersisted = await saveResults(config.key, getCurrentResults());
   renderRanking();
 
@@ -918,18 +1142,33 @@ function csvEscape(value) {
   return text;
 }
 
+function formatAttemptSummary(result, config) {
+  const bestAttemptId = result.bestAttemptId || result.id;
+
+  return getResultAttempts(result, config).map((attempt, index) => {
+    const bestText = attempt.id === bestAttemptId ? " (najlepsza)" : "";
+    return `Próba ${index + 1}: ${formatNumber(getResultValue(attempt, config))} ${config.valueUnit}, ${formatDate(attempt.attemptedAt)}, ${formatNumber(attempt.points)} pkt${bestText}`;
+  }).join(" | ");
+}
+
 function exportCsvData() {
   const config = getActivityConfig();
-  const rows = sortResults(getCurrentResults(), config.key).map((result, index) => [
-    index + 1,
-    result.name,
-    result.heightCm,
-    result.bodyWeightKg,
-    getResultValue(result, config),
-    result.points,
-    result.updatedAt
-  ]);
-  const header = ["Miejsce", "Pracownik", "Wzrost cm", "Waga ciała kg", config.csvValueHeader, "Punkty", "Aktualizacja"];
+  const rows = sortResults(getCurrentResults(), config.key).map((result, index) => {
+    const attempts = getResultAttempts(result, config);
+
+    return [
+      index + 1,
+      result.name,
+      result.heightCm,
+      result.bodyWeightKg,
+      getResultValue(result, config),
+      result.points,
+      result.updatedAt,
+      attempts.length,
+      formatAttemptSummary(result, config)
+    ];
+  });
+  const header = ["Miejsce", "Pracownik", "Wzrost cm", "Waga ciała kg", config.csvValueHeader, "Punkty", "Aktualizacja", "Liczba prób", "Historia prób"];
   const content = [header, ...rows]
     .map((row) => row.map(csvEscape).join(";"))
     .join("\r\n");
@@ -994,6 +1233,7 @@ function parseImportPayload(content) {
 }
 
 function mergeImportedResults(activityKey, importedResults) {
+  const config = getActivityConfig(activityKey);
   const currentResults = state.resultsByActivity[activityKey] || [];
   const resultByName = new Map();
   let addedCount = 0;
@@ -1008,10 +1248,23 @@ function mergeImportedResults(activityKey, importedResults) {
     const existingResult = resultByName.get(nameKey);
 
     if (existingResult) {
-      resultByName.set(nameKey, {
-        ...importedResult,
-        id: existingResult.id
+      const attemptsById = new Map();
+
+      getResultAttempts(existingResult, config).forEach((attempt) => {
+        attemptsById.set(attempt.id, attempt);
       });
+      getResultAttempts(importedResult, config).forEach((attempt) => {
+        attemptsById.set(attempt.id, attempt);
+      });
+
+      const mergedResult = createResultFromAttempts({
+        name: importedResult.name || existingResult.name
+      }, config, Array.from(attemptsById.values()), existingResult.id);
+
+      if (mergedResult) {
+        resultByName.set(nameKey, mergedResult);
+      }
+
       updatedCount += 1;
       return;
     }
@@ -1097,6 +1350,7 @@ async function clearAllData() {
   }
 
   setCurrentResults([]);
+  clearExpandedAttemptsForActivity(config.key);
   const isPersisted = await saveResults(config.key, []);
   renderRanking();
   clearForm();
