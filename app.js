@@ -3,6 +3,7 @@ const DB_VERSION = 2;
 const META_STORE = "meta";
 const LEGACY_BENCH_STORE = "results";
 const INITIALIZED_SUFFIX = "initialized";
+const REMOTE_API_URL = "https://zgvfvwhmjsyjradgycpw.supabase.co/functions/v1/leaderboard";
 
 const benchSeedData = [
   { name: "Michał Nowak", heightCm: 180, bodyWeightKg: 85, liftedKg: 145 },
@@ -160,6 +161,8 @@ const state = {
     pullups: []
   },
   expandedAttemptIds: new Set(),
+  remoteResultsLoaded: false,
+  remoteLastError: "",
   searchTerm: "",
   sortBy: "points-desc",
   storageMode: "indexedDB"
@@ -284,6 +287,7 @@ function createResultFromAttempts(data, config, attempts, existingId = generateI
     id: existingId,
     discipline: config.key,
     name: String(data.name || "").trim(),
+    nameKey: data.nameKey || normalizeRemoteNameKey(data.name || ""),
     heightCm: bestAttempt.heightCm,
     bodyWeightKg: bestAttempt.bodyWeightKg,
     [config.valueKey]: getResultValue(bestAttempt, config),
@@ -347,7 +351,8 @@ function normalizeLoadedResult(item, activityKey) {
 
   return createResultFromAttempts({
     name,
-    discipline: item.discipline
+    discipline: item.discipline,
+    nameKey: item.nameKey
   }, config, attempts, item.id || generateId());
 }
 
@@ -489,8 +494,96 @@ function saveLocalStorageResults(activityKey, results) {
   localStorage.setItem(config.legacyStorageKey, JSON.stringify(normalizeLoadedResults(results, activityKey)));
 }
 
+function isRemoteApiConfigured() {
+  return Boolean(REMOTE_API_URL);
+}
+
+function normalizeRemoteNameKey(name) {
+  return normalizeText(String(name || "").trim()).replace(/\s+/g, " ");
+}
+
+function applyRemoteResults(resultsByActivity = {}) {
+  Object.keys(activities).forEach((activityKey) => {
+    state.resultsByActivity[activityKey] = normalizeLoadedResults(resultsByActivity[activityKey] || [], activityKey);
+  });
+
+  state.remoteResultsLoaded = true;
+  state.remoteLastError = "";
+  state.storageMode = "remote";
+  updateStorageInfo();
+}
+
+async function fetchRemoteResults() {
+  const response = await fetch(REMOTE_API_URL, {
+    method: "GET",
+    headers: {
+      "Accept": "application/json"
+    }
+  });
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok || payload.ok === false) {
+    throw new Error(payload.error || "Nie udało się pobrać wyników z Supabase.");
+  }
+
+  applyRemoteResults(payload.resultsByActivity || {});
+  return payload;
+}
+
+function getWriteCode() {
+  const code = window.prompt("Wpisz kod uprawniający do zapisu wyników:");
+
+  if (!code) {
+    return null;
+  }
+
+  return code;
+}
+
+function buildRemoteAttemptPayload(formData, config) {
+  return {
+    activity: config.key,
+    name: String(formData.name || "").trim(),
+    heightCm: Number(formData.heightCm),
+    bodyWeightKg: Number(formData.bodyWeightKg),
+    value: Number(formData[config.valueKey])
+  };
+}
+
+async function sendRemoteMutation(method, body) {
+  const response = await fetch(REMOTE_API_URL, {
+    method,
+    headers: {
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok || payload.ok === false) {
+    throw new Error(payload.error || "Nie udało się zapisać danych w Supabase.");
+  }
+
+  applyRemoteResults(payload.resultsByActivity || {});
+  return payload;
+}
+
 async function loadResults(activityKey) {
   const config = getActivityConfig(activityKey);
+
+  if (isRemoteApiConfigured()) {
+    if (state.remoteResultsLoaded) {
+      return state.resultsByActivity[activityKey] || [];
+    }
+
+    try {
+      await fetchRemoteResults();
+      return state.resultsByActivity[activityKey] || [];
+    } catch (error) {
+      state.remoteLastError = error.message || "Nie udało się połączyć z Supabase.";
+    }
+  }
 
   try {
     const indexedResults = await getAllFromIndexedDbStore(config.storeName, activityKey);
@@ -942,6 +1035,57 @@ async function handleSubmit(event) {
     return;
   }
 
+  if (state.storageMode === "remote") {
+    const code = getWriteCode();
+
+    if (!code) {
+      renderMessages(["Zapis anulowany. Nie podano kodu dostępu."]);
+      return;
+    }
+
+    const editingId = elements.editingId.value;
+    const currentResults = getCurrentResults();
+    const editedResult = editingId
+      ? currentResults.find((result) => result.id === editingId)
+      : null;
+    const existingByName = currentResults.find((result) => normalizeText(result.name) === normalizeText(formData.name.trim()));
+    const remotePayload = buildRemoteAttemptPayload(formData, config);
+
+    try {
+      if (editedResult) {
+        await sendRemoteMutation("PATCH", {
+          code,
+          attemptId: editedResult.bestAttemptId || editedResult.id,
+          payload: remotePayload
+        });
+        renderRanking();
+        clearForm();
+        renderMessages(["Wynik został zaktualizowany w Supabase."], "success");
+        return;
+      }
+
+      await sendRemoteMutation("POST", {
+        code,
+        payload: remotePayload
+      });
+
+      if (existingByName) {
+        state.expandedAttemptIds.add(getExpandedAttemptKey(existingByName.id, config.key));
+      }
+
+      renderRanking();
+      clearForm();
+      renderMessages([existingByName
+        ? "Dodano kolejną próbę w Supabase. Na tablicy widoczny jest najlepszy wynik."
+        : "Wynik został zapisany w Supabase."
+      ], "success");
+      return;
+    } catch (error) {
+      renderMessages([error.message || "Nie udało się zapisać wyniku w Supabase."]);
+      return;
+    }
+  }
+
   const editingId = elements.editingId.value;
   const currentResults = getCurrentResults();
   const normalizedName = normalizeText(formData.name.trim());
@@ -1073,6 +1217,31 @@ async function deleteResult(result) {
   }
 
   const config = getActivityConfig();
+
+  if (state.storageMode === "remote") {
+    const code = getWriteCode();
+
+    if (!code) {
+      renderMessages(["Usuwanie anulowane. Nie podano kodu dostępu."]);
+      return;
+    }
+
+    try {
+      await sendRemoteMutation("DELETE", {
+        code,
+        mode: "person",
+        activity: config.key,
+        nameKey: result.nameKey || normalizeRemoteNameKey(result.name)
+      });
+      state.expandedAttemptIds.delete(getExpandedAttemptKey(result.id, config.key));
+      renderRanking();
+      renderMessages(["Wynik został usunięty z Supabase."], "success");
+      return;
+    } catch (error) {
+      renderMessages([error.message || "Nie udało się usunąć wyniku z Supabase."]);
+      return;
+    }
+  }
 
   setCurrentResults(getCurrentResults().filter((item) => item.id !== result.id));
   state.expandedAttemptIds.delete(getExpandedAttemptKey(result.id, config.key));
@@ -1292,6 +1461,59 @@ async function handleImportJsonFile(event) {
     const content = await readFileAsText(file);
     const importData = parseImportPayload(content);
     const config = getActivityConfig(importData.activityKey);
+
+    if (state.storageMode === "remote") {
+      const code = getWriteCode();
+
+      if (!code) {
+        renderMessages(["Import anulowany. Nie podano kodu dostępu."]);
+        return;
+      }
+
+      let importedAttemptsCount = 0;
+
+      for (const result of importData.results) {
+        getResultAttempts(result, config).forEach((attempt) => {
+          importedAttemptsCount += 1;
+        });
+      }
+
+      for (const result of importData.results) {
+        for (const attempt of getResultAttempts(result, config)) {
+          await sendRemoteMutation("POST", {
+            code,
+            payload: {
+              activity: config.key,
+              name: result.name,
+              heightCm: attempt.heightCm,
+              bodyWeightKg: attempt.bodyWeightKg,
+              value: getResultValue(attempt, config)
+            }
+          });
+        }
+      }
+
+      if (importData.activityKey !== state.currentActivity) {
+        state.currentActivity = importData.activityKey;
+        updateActivityUi();
+      }
+
+      renderRanking();
+      clearForm();
+
+      const summary = [
+        `Import zakończony: ${config.label}.`,
+        `Dodano prób: ${importedAttemptsCount}.`
+      ];
+
+      if (importData.skippedCount > 0) {
+        summary.push(`Pominięto niepoprawne rekordy: ${importData.skippedCount}.`);
+      }
+
+      renderMessages(summary, "success");
+      return;
+    }
+
     const mergeInfo = mergeImportedResults(importData.activityKey, importData.results);
 
     if (importData.activityKey !== state.currentActivity) {
@@ -1349,6 +1571,37 @@ async function clearAllData() {
     return;
   }
 
+  if (state.storageMode === "remote") {
+    const code = getWriteCode();
+
+    if (!code) {
+      renderMessages(["Czyszczenie anulowane. Nie podano kodu dostępu."]);
+      return;
+    }
+
+    try {
+      const resultsToDelete = getCurrentResults();
+
+      for (const result of resultsToDelete) {
+        await sendRemoteMutation("DELETE", {
+          code,
+          mode: "person",
+          activity: config.key,
+          nameKey: result.nameKey || normalizeRemoteNameKey(result.name)
+        });
+      }
+
+      clearExpandedAttemptsForActivity(config.key);
+      renderRanking();
+      clearForm();
+      renderMessages([`Wyczyszczono wszystkie dane w Supabase w zakładce ${config.label}.`], "success");
+      return;
+    } catch (error) {
+      renderMessages([error.message || "Nie udało się wyczyścić danych w Supabase."]);
+      return;
+    }
+  }
+
   setCurrentResults([]);
   clearExpandedAttemptsForActivity(config.key);
   const isPersisted = await saveResults(config.key, []);
@@ -1364,13 +1617,22 @@ async function clearAllData() {
 }
 
 function updateStorageInfo() {
+  if (state.storageMode === "remote") {
+    elements.storageStatus.textContent = "Dane są pobierane z Supabase. Zapis, edycja i usuwanie wymagają kodu dostępu.";
+    return;
+  }
+
   if (state.storageMode === "indexedDB") {
-    elements.storageStatus.textContent = "Dane są zapisywane osobno dla każdej zakładki w lokalnej bazie IndexedDB.";
+    elements.storageStatus.textContent = state.remoteLastError
+      ? `Tryb awaryjny IndexedDB. Supabase: ${state.remoteLastError}`
+      : "Dane są zapisywane osobno dla każdej zakładki w lokalnej bazie IndexedDB.";
     return;
   }
 
   if (state.storageMode === "localStorage") {
-    elements.storageStatus.textContent = "Dane są zapisywane osobno dla każdej zakładki w localStorage jako tryb awaryjny.";
+    elements.storageStatus.textContent = state.remoteLastError
+      ? `Tryb awaryjny localStorage. Supabase: ${state.remoteLastError}`
+      : "Dane są zapisywane osobno dla każdej zakładki w localStorage jako tryb awaryjny.";
     return;
   }
 
