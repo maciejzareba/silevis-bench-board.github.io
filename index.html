@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Silevis – Tablica wyników</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="site-header">
+      <div class="brand-mark" aria-hidden="true">🏆</div>
+      <div>
+        <h1>Silevis – Tablica wyników</h1>
+        <p>Wyciskanie na klatę</p>
+      </div>
+    </header>
+
+    <main class="main-layout">
+      <section class="ranking-section" aria-labelledby="ranking-title">
+        <div class="toolbar" aria-label="Narzędzia rankingu">
+          <label class="field-shell search-shell">
+            <span aria-hidden="true">⌕</span>
+            <input
+              id="searchInput"
+              type="search"
+              placeholder="Szukaj pracownika..."
+              autocomplete="off"
+              data-testid="silevis-search-input"
+            >
+          </label>
+
+          <label class="field-shell sort-shell">
+            <span aria-hidden="true">☰</span>
+            <select id="sortSelect" data-testid="silevis-sort-select">
+              <option value="points-desc">Punkty malejąco</option>
+              <option value="lifted-desc">Wynik kg malejąco</option>
+              <option value="name-asc">Imię A-Z</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="board-frame">
+          <span class="board-pin board-pin-top-left" aria-hidden="true"></span>
+          <span class="board-pin board-pin-top-right" aria-hidden="true"></span>
+          <span class="board-pin board-pin-bottom-left" aria-hidden="true"></span>
+          <span class="board-pin board-pin-bottom-right" aria-hidden="true"></span>
+
+          <div class="board" data-testid="silevis-ranking-board">
+            <div class="board-heading">
+              <div>
+                <p class="eyebrow">Ranking firmowy</p>
+                <h2 id="ranking-title">Najmocniejsza klata</h2>
+              </div>
+              <p class="board-note">wg punktów</p>
+            </div>
+
+            <div id="rankingList" class="ranking-list" aria-live="polite"></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="form-card" aria-labelledby="form-title">
+        <div class="form-card-title">
+          <span aria-hidden="true">♙</span>
+          <h2 id="form-title">Dodaj wynik</h2>
+        </div>
+
+        <form id="resultForm" novalidate data-testid="silevis-result-form">
+          <input id="editingId" type="hidden">
+
+          <label class="form-field">
+            <span>Pracownik</span>
+            <input
+              id="nameInput"
+              name="name"
+              type="text"
+              placeholder="np. Michał Nowak"
+              autocomplete="name"
+              data-testid="silevis-name-input"
+            >
+          </label>
+
+          <label class="form-field">
+            <span>Wzrost (cm)</span>
+            <input
+              id="heightInput"
+              name="heightCm"
+              type="number"
+              min="120"
+              max="230"
+              step="1"
+              placeholder="np. 180"
+              data-testid="silevis-height-input"
+            >
+          </label>
+
+          <label class="form-field">
+            <span>Waga ciała (kg)</span>
+            <input
+              id="bodyWeightInput"
+              name="bodyWeightKg"
+              type="number"
+              min="40"
+              max="200"
+              step="0.1"
+              placeholder="np. 85"
+              data-testid="silevis-body-weight-input"
+            >
+          </label>
+
+          <label class="form-field">
+            <span>Wynik na klatę (kg)</span>
+            <input
+              id="liftedInput"
+              name="liftedKg"
+              type="number"
+              min="20"
+              max="300"
+              step="0.5"
+              placeholder="np. 125"
+              data-testid="silevis-lifted-input"
+            >
+          </label>
+
+          <div id="formMessages" class="form-messages" aria-live="polite" data-testid="silevis-form-messages"></div>
+
+          <div class="form-actions">
+            <button class="primary-button" type="submit" data-testid="silevis-save-result-button">
+              <span aria-hidden="true">✓</span>
+              Zapisz wynik
+            </button>
+            <button class="ghost-button" id="clearButton" type="button" data-testid="silevis-clear-button">
+              Wyczyść
+            </button>
+          </div>
+        </form>
+
+        <div class="export-panel" aria-label="Eksport danych">
+          <strong>Eksport danych</strong>
+          <div class="export-actions">
+            <button class="ghost-button" id="exportJsonButton" type="button" data-testid="silevis-export-json-button">
+              JSON
+            </button>
+            <button class="ghost-button" id="exportCsvButton" type="button" data-testid="silevis-export-csv-button">
+              CSV
+            </button>
+          </div>
+          <p id="storageStatus" data-testid="silevis-storage-status">Zapis lokalny jest uruchamiany...</p>
+        </div>
+
+        <div class="score-info">
+          <strong>Punktacja</strong>
+          <p>Punkty uwzględniają wynik, wagę ciała i wzrost zawodnika.</p>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
