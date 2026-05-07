@@ -12,9 +12,30 @@
       <div class="brand-mark" aria-hidden="true">🏆</div>
       <div>
         <h1>Silevis – Tablica wyników</h1>
-        <p>Wyciskanie na klatę</p>
+        <p id="activitySubtitle">Wyciskanie na klatę</p>
       </div>
     </header>
+
+    <nav class="activity-tabs" aria-label="Dyscypliny">
+      <button
+        class="tab-button is-active"
+        type="button"
+        data-activity="bench"
+        aria-selected="true"
+        data-testid="silevis-bench-tab"
+      >
+        Wyciskanie
+      </button>
+      <button
+        class="tab-button"
+        type="button"
+        data-activity="pullups"
+        aria-selected="false"
+        data-testid="silevis-pullups-tab"
+      >
+        Podciąganie
+      </button>
+    </nav>
 
     <main class="main-layout">
       <section class="ranking-section" aria-labelledby="ranking-title">
@@ -34,7 +55,7 @@
             <span aria-hidden="true">☰</span>
             <select id="sortSelect" data-testid="silevis-sort-select">
               <option value="points-desc">Punkty malejąco</option>
-              <option value="lifted-desc">Wynik kg malejąco</option>
+              <option id="valueSortOption" value="value-desc">Wynik kg malejąco</option>
               <option value="name-asc">Imię A-Z</option>
             </select>
           </label>
@@ -52,7 +73,7 @@
                 <p class="eyebrow">Ranking firmowy</p>
                 <h2 id="ranking-title">Najmocniejsza klata</h2>
               </div>
-              <p class="board-note">wg punktów</p>
+              <p id="boardNote" class="board-note">wg punktów</p>
             </div>
 
             <div id="rankingList" class="ranking-list" aria-live="polite"></div>
@@ -110,7 +131,7 @@
           </label>
 
           <label class="form-field">
-            <span>Wynik na klatę (kg)</span>
+            <span id="valueFieldLabel">Wynik na klatę (kg)</span>
             <input
               id="liftedInput"
               name="liftedKg"
@@ -136,25 +157,61 @@
           </div>
         </form>
 
-        <div class="export-panel" aria-label="Eksport danych">
-          <strong>Eksport danych</strong>
-          <div class="export-actions">
+        <div class="export-panel" aria-label="Dane lokalne">
+          <strong>Dane lokalne</strong>
+          <div class="data-actions">
             <button class="ghost-button" id="exportJsonButton" type="button" data-testid="silevis-export-json-button">
-              JSON
+              Eksport JSON
             </button>
             <button class="ghost-button" id="exportCsvButton" type="button" data-testid="silevis-export-csv-button">
-              CSV
+              Eksport CSV
+            </button>
+            <button class="ghost-button" id="importJsonButton" type="button" data-testid="silevis-import-json-button">
+              Import JSON
+            </button>
+            <button
+              class="ghost-button danger-button"
+              id="clearAllDataButton"
+              type="button"
+              title="Przed czyszczeniem zapytamy, czy chcesz pobrać kopię JSON."
+              data-testid="silevis-clear-all-data-button"
+            >
+              Wyczyść wszystkie dane
             </button>
           </div>
+          <input id="importJsonInput" type="file" accept="application/json,.json" hidden data-testid="silevis-import-json-input">
           <p id="storageStatus" data-testid="silevis-storage-status">Zapis lokalny jest uruchamiany...</p>
         </div>
 
         <div class="score-info">
-          <strong>Punktacja</strong>
-          <p>Punkty uwzględniają wynik, wagę ciała i wzrost zawodnika.</p>
+          <div class="score-info-header">
+            <strong>Punktacja</strong>
+            <button
+              class="info-button"
+              id="algorithmInfoButton"
+              type="button"
+              aria-label="Jak liczymy punkty?"
+              aria-haspopup="dialog"
+              aria-controls="algorithmModal"
+              title="Jak liczymy punkty?"
+              data-testid="silevis-algorithm-info-button"
+            >
+              i
+            </button>
+          </div>
+          <p id="scoreInfoText">Punkty uwzględniają wynik, wagę ciała i wzrost zawodnika.</p>
         </div>
       </aside>
     </main>
+  </div>
+
+  <div class="modal-overlay" id="algorithmModal" hidden data-testid="silevis-algorithm-modal">
+    <section class="algorithm-dialog" role="dialog" aria-modal="true" aria-labelledby="algorithmModalTitle">
+      <button class="modal-close-button" id="algorithmModalClose" type="button" aria-label="Zamknij opis punktacji">
+        ×
+      </button>
+      <div id="algorithmModalContent"></div>
+    </section>
   </div>
 
   <script src="app.js"></script>
